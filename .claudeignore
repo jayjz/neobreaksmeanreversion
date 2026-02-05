@@ -1,0 +1,34 @@
+# Exclude virtual environment
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Git
+.git/
+.gitignore
+
+# Tests/data (large or generated)
+tests/__pycache__/
+*.csv
+*.pkl
+*.log
+
+# IDE/Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build/dist
+dist/
+build/
+*.egg-info/
+
+# Large libraries (if any data dumps)
+*.whl

@@ -1,0 +1,42 @@
+[Unit]
+Description=Hybrid Trader - Algorithmic Trading System
+Documentation=https://github.com/yourusername/hybrid_trader
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=getrekt
+Group=getrekt
+WorkingDirectory=/home/getrekt/NeoGonnaBreakOut/hybrid_trader
+Environment=PATH=/home/getrekt/NeoGonnaBreakOut/hybrid_trader/venv/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=/home/getrekt/NeoGonnaBreakOut/hybrid_trader/.env
+
+# Main trading loop with JSON logs for observability
+ExecStart=/home/getrekt/NeoGonnaBreakOut/hybrid_trader/venv/bin/python -m src.main --json-logs
+
+# Restart policy
+Restart=always
+RestartSec=60
+StartLimitInterval=300
+StartLimitBurst=3
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/getrekt/NeoGonnaBreakOut/hybrid_trader
+ReadWritePaths=/tmp
+PrivateTmp=true
+
+# Resource limits
+MemoryMax=1G
+CPUQuota=50%
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hybrid_trader
+
+[Install]
+WantedBy=multi-user.target

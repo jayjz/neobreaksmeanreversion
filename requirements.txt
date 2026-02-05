@@ -1,0 +1,15 @@
+pandas
+numpy
+yfinance
+alpaca-py
+schwab-py
+backtrader
+pandas-ta
+pytest
+scikit-learn
+python-dotenv
+ruff
+black
+mypy
+streamlit
+plotly
