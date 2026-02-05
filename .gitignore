@@ -1,0 +1,170 @@
+cat <<'EOF' > .gitignore
+# === CyberSecurity-Focused .gitignore for Hybrid Trader ===
+# This .gitignore is designed with security in mind:
+# - Prevents accidental commits of secrets, credentials, API keys
+# - Excludes audit trails, logs, and sensitive outputs
+# - Blocks environment-specific files that could leak system info
+# - Follows best practices for Python/quant projects (2026 standards)
+
+# ───────────────────────────────
+# Secrets & Credentials (CRITICAL)
+# ───────────────────────────────
+.env
+*.env
+.env.local
+.env.*.local
+secrets/
+credentials/
+keys/
+*.pem
+*.key
+*.crt
+*.cer
+*.der
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.json  # Often used for service account keys (GCP, AWS, etc.)
+*.yaml   # Config files that may contain secrets
+*.yml
+
+# API Keys / Tokens (common patterns)
+*api_key*
+*secret*
+*token*
+*password*
+*auth*
+*.auth
+
+# SSH / GPG / Crypto Keys
+~/.ssh/
+id_rsa
+id_ed25519
+*.pub
+known_hosts
+
+# ───────────────────────────────
+# Virtual Environments & Dependencies
+# ───────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+venv*/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+dist/
+build/
+*.dist-info/
+
+# Pip / Poetry / Conda
+pip-wheel-metadata/
+.pip-cache/
+poetry.lock  # Optional: lock if you don't want to commit
+conda-lock.yml
+
+# ───────────────────────────────
+# Logs, Audit Trails & Sensitive Outputs
+# ───────────────────────────────
+*.log
+logs/
+log/
+*.csv          # trades.csv, positions.csv, etc. — audit trails
+trades.csv
+positions.csv
+health/
+*.health
+/tmp/*
+/tmp/
+
+# ───────────────────────────────
+# IDE / Editor Files (Can leak paths, history)
+# ───────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+.desktop
+*.bak
+*.tmp
+
+# VS Code extensions/settings that may contain paths
+.vscode/settings.json
+.vscode/extensions.json
+
+# Jupyter
+.ipynb_checkpoints
+*.ipynb
+
+# ───────────────────────────────
+# OS / System Files
+# ───────────────────────────────
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+
+# Linux
+*~
+.fuse_hidden*
+.nfs*
+
+# ───────────────────────────────
+# Docker / Containers (If added later)
+# ───────────────────────────────
+.dockerignore
+Dockerfile*
+docker-compose*.yml
+.docker/
+
+# ───────────────────────────────
+# Testing / CI Artifacts
+# ───────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.mypy_cache/
+.dmypy.json
+.pyre/
+
+# ───────────────────────────────
+# Misc Quant/Trading Specific
+# ───────────────────────────────
+backtrader/
+data/          # Raw market data dumps
+cache/
+*.pkl          # Pickled models/data
+*.hdf5
+*.h5
+*.parquet
+
+# Backup files
+*.bak
+*.backup
+
+# End of file
+EOF
