@@ -23,7 +23,6 @@ from .data.loader import MarketDataLoader
 from .data.normalizer import HybridDataNormalizer
 from .strategies import EquityReversal, CryptoReversal, setup_cerebro_with_feeds
 from .execution import AlpacaExecutor, OrderRouter, SignalConfig, OrderResult
-from .execution.models import OrderSideEnum
 from .utils.logger import setup_logging, TradeLogger
 from .health import HealthMonitor
 
@@ -120,7 +119,9 @@ def run_cycle(
         # Log executed orders to trade audit trail
         for order in orders:
             if order.filled_qty > 0:
-                trade_logger.log_order(order, OrderSideEnum.BUY)
+                # Infer side from client_order_id prefix (close- = SELL, open- = BUY)
+                side = "SELL" if order.client_order_id and order.client_order_id.startswith("close-") else "BUY"
+                trade_logger.log_order(order, side)
 
     return signals
 

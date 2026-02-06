@@ -52,14 +52,34 @@ class MarketDataLoader:
             raise
 
     def _validate_structure(self, df: pd.DataFrame, tickers: List[str]) -> pd.DataFrame:
-        """Ensures DataFrame has correct MultiIndex structure."""
+        """
+        Ensures DataFrame has correct MultiIndex structure.
+
+        yfinance behavior varies:
+        - With group_by='ticker', recent versions return MultiIndex for all cases
+        - Older versions or edge cases may return flat Index for single tickers
+
+        This method normalizes to MultiIndex: [(ticker, 'Open'), (ticker, 'High'), ...]
+        """
+        # Already a proper MultiIndex - nothing to do
+        if isinstance(df.columns, pd.MultiIndex):
+            # Verify structure is correct (ticker level exists)
+            if df.columns.nlevels >= 2:
+                # Drop rows with all NaNs
+                df = df.dropna(how='all')
+                return df
+
+        # Flat index case: single ticker returned without MultiIndex
         if len(tickers) == 1:
-            # Reformat single ticker to match multi-ticker structure
             ticker = tickers[0]
-            df.columns = pd.MultiIndex.from_product([[ticker], df.columns])
-        
+            # Convert flat columns to MultiIndex
+            df.columns = pd.MultiIndex.from_tuples(
+                [(ticker, col) for col in df.columns],
+                names=['Ticker', 'Field']
+            )
+
         # Drop rows with all NaNs
-        df.dropna(how='all', inplace=True)
+        df = df.dropna(how='all')
         return df
 
 if __name__ == "__main__":

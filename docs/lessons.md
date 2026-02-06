@@ -7,6 +7,13 @@
   - `alpaca-py`: Package name is `alpaca-py`, but import usage is `import alpaca` (NOT `import alpaca_py`).
   - `pandas-ta`: We are on the Beta branch. Use `df.ta.ticker('SPY')` for data loading tests, not legacy examples.
   - `venv`: Always run inside the dedicated `venv`.
+  - `yfinance` MultiIndex Quirk (2026-02-05): With `group_by='ticker'`, yfinance now ALWAYS returns MultiIndex columns — even for single tickers. Old code assumed single ticker = flat index. The fix: check `isinstance(df.columns, pd.MultiIndex)` before promoting. Never call `pd.MultiIndex.from_product()` on an existing MultiIndex.
+
+## Configuration Loading (Bug Fix - 2026-02-05)
+- **python-dotenv path quirk**: `load_dotenv()` without arguments searches from cwd, which may not be project root when running as `python -m src.main` from different directories. Always use explicit `dotenv_path=Path(__file__).resolve().parent.parent / ".env"` for reliability.
+- **Pre-flight .env check**: Verify `.env` exists before attempting to load. Provide actionable error message with exact `cp .env.example .env` command if missing.
+- **Debug output on startup**: Print loaded file path and masked API key (first 4 + last 4 chars) to stderr for easier troubleshooting.
+- **Test mocking pattern**: When testing config loading, must mock both `load_dotenv` AND `_ENV_FILE.exists()` since the file check happens before dotenv loading.
 
 ## Data Strategy (Phase 1)
 - **Hybrid Alignment:** Crypto trades 24/7; Stocks trade M-F.
@@ -26,7 +33,7 @@
 - **Alpaca-py Types:** API returns union types (e.g., `Order | dict[str, Any]`). Use `# type: ignore[arg-type]` for mypy compatibility — runtime behavior is correct.
 - **Decimal Precision:** All monetary values use `Decimal` (not `float`) to prevent floating-point errors in financial calculations.
 - **Frozen Dataclasses:** DTOs (`AccountInfo`, `PositionInfo`, `OrderResult`) are frozen for immutability and thread safety.
-- **Crypto vs Equity:** Different TimeInForce values — crypto only supports `GTC`/`IOC`, equities use `DAY`. Handle in `_build_alpaca_request()`.
+- **Crypto vs Equity TIF (Bug Fix 2026-02-06):** Crypto orders ONLY support `GTC`/`IOC`, NOT `DAY`. Alpaca returns error 42210000 "invalid crypto time_in_force" if `DAY` is used. Detection: Use `get_asset_class(symbol)` which checks for `-USD`/`/USD` suffixes and crypto prefixes (BTC, ETH, SOL, etc.). Do NOT rely on simple string matching after symbol translation — use the robust asset class detection method.
 - **Mocked Tests:** All execution tests use `unittest.mock` to prevent real API calls. Never test against live Alpaca endpoints.
 - **Order Router Design:** Synchronous design matches backtrader's model. Async can be added later if needed for high-frequency use cases.
 
@@ -57,3 +64,10 @@
 - **Deploy Script Design:** Use `set -euo pipefail` for bash safety. Separate steps into functions for clarity. Support flags like `--no-restart` for CI/CD flexibility.
 - **Systemd Security:** Use `ProtectSystem=strict`, `ProtectHome=read-only`, `NoNewPrivileges=true` for security hardening. Allow only necessary write paths.
 - **Service Restart Policy:** `RestartSec=60` with `StartLimitBurst=3` in `StartLimitInterval=300` prevents restart loops while ensuring recovery from transient failures.
+
+## Execution Reconciliation (Phase 6.1 - 2026-02-05)
+- **Portfolio Reconciliation Model:** OrderRouter must compare target signals against actual positions. Two-phase process: (1) Generate CLOSE orders for held positions not in signals, (2) Generate OPEN orders for positive signals without positions. Closes execute first to free capital.
+- **Ratchet Bug Prevention:** Never filter out zero/negative signals when iterating positions — those are sell signals! Similarly, don't skip held positions when calculating orders — they may need to be closed.
+- **Order Side Tracking:** When OrderResult doesn't include side, use client_order_id prefix pattern: "close-{uuid}" for SELL, "open-{uuid}" for BUY. This enables proper audit logging without modifying DTOs.
+- **Reconciliation Test Coverage:** Test all scenarios: signal disappearance, signal drops to zero, signal stays positive (no action), multiple symbols, crypto positions, dry run mode, edge cases (empty portfolio, full exit).
+- **ReconciliationResult DTO:** Use frozen dataclass with `closes: List[OrderRequest]` and `opens: List[OrderRequest]` for type safety and clear separation of order types.

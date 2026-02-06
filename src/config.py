@@ -2,16 +2,24 @@
 Configuration management for Hybrid Trader.
 
 Loads environment variables from .env file with strict validation.
+Uses explicit path resolution to ensure .env is found regardless of cwd.
 """
 from __future__ import annotations
 
 import os
+import sys
 import time
 from dataclasses import dataclass
 from decimal import Decimal
+from pathlib import Path
 from typing import List
 
 from dotenv import load_dotenv
+
+# Resolve paths relative to this file's location
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_ENV_FILE = _PROJECT_ROOT / ".env"
+_ENV_EXAMPLE = _PROJECT_ROOT / ".env.example"
 
 
 @dataclass(frozen=True)
@@ -37,6 +45,9 @@ def load_config() -> TradingConfig:
     """
     Load configuration from .env file with strict validation.
 
+    Uses explicit path resolution relative to this file's location
+    to ensure .env is found regardless of working directory.
+
     Environment Variables:
         ALPACA_API_KEY: Required. Your Alpaca API key.
         ALPACA_SECRET_KEY: Required. Your Alpaca secret key.
@@ -52,18 +63,37 @@ def load_config() -> TradingConfig:
         TradingConfig with validated settings.
 
     Raises:
-        ValueError: If required environment variables are missing.
+        FileNotFoundError: If .env file does not exist.
+        ValueError: If required environment variables are missing or empty.
     """
-    load_dotenv()
+    # Check if .env exists before attempting to load
+    if not _ENV_FILE.exists():
+        msg = (
+            f"\n.env file not found at: {_ENV_FILE}\n\n"
+            f"To fix this:\n"
+            f"  1. Copy the example:  cp {_ENV_EXAMPLE} {_ENV_FILE}\n"
+            f"  2. Edit with your Alpaca API credentials:  nano {_ENV_FILE}\n"
+        )
+        raise FileNotFoundError(msg)
 
-    # Required keys (fail if missing)
-    api_key = os.environ.get("ALPACA_API_KEY")
-    secret_key = os.environ.get("ALPACA_SECRET_KEY")
+    # Load with explicit path (not relying on cwd)
+    load_dotenv(dotenv_path=_ENV_FILE)
 
+    # Get credentials
+    api_key = os.environ.get("ALPACA_API_KEY", "").strip()
+    secret_key = os.environ.get("ALPACA_SECRET_KEY", "").strip()
+
+    # Debug output: show what was loaded (masked for security)
+    if api_key:
+        masked_key = f"{api_key[:4]}...{api_key[-4:]}" if len(api_key) > 8 else "****"
+        print(f"[config] Loaded .env from: {_ENV_FILE}", file=sys.stderr)
+        print(f"[config] ALPACA_API_KEY: {masked_key}", file=sys.stderr)
+
+    # Validate required keys are present and non-empty
     if not api_key or not secret_key:
         raise ValueError(
-            "ALPACA_API_KEY and ALPACA_SECRET_KEY are required. "
-            "Set them in your .env file."
+            "ALPACA_API_KEY and ALPACA_SECRET_KEY are required.\n"
+            f"Check your .env file at: {_ENV_FILE}"
         )
 
     # TRADING_MODE: "PAPER" (default) or "LIVE"

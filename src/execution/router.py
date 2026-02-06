@@ -1,5 +1,12 @@
 """
-OrderRouter: Maps strategy signals to executable orders.
+OrderRouter: Portfolio Reconciliation Engine.
+
+Converts strategy signals into executable orders by comparing
+target allocations against current positions.
+
+Enterprise Pattern: Target vs Actual Reconciliation
+- For each held position: if not in signals or signal ≤ 0, SELL
+- For each positive signal: if not held, BUY
 """
 from __future__ import annotations
 
@@ -43,24 +50,38 @@ class PendingOrder:
     submitted_at: float  # timestamp
 
 
+@dataclass(frozen=True)
+class ReconciliationResult:
+    """Result of portfolio reconciliation."""
+
+    closes: List[OrderRequest]  # Positions to close (sells)
+    opens: List[OrderRequest]  # Positions to open (buys)
+
+    @property
+    def total_orders(self) -> int:
+        return len(self.closes) + len(self.opens)
+
+
 class OrderRouter:
     """
-    Routes strategy signals to orders via an Executor.
+    Portfolio Reconciliation Engine.
 
-    Responsibilities:
-    1. Convert signal strengths (Dict[str, float]) to order quantities
-    2. Apply position sizing rules
-    3. Track pending orders
-    4. Handle partial fills
-    5. Provide portfolio synchronization
+    Compares strategy signals (target allocations) against current positions
+    (actual allocations) and generates orders to reconcile the difference.
+
+    Reconciliation Logic:
+    1. CLOSE: For each held position NOT in signals (or signal ≤ 0), sell all
+    2. OPEN: For each positive signal without a position, buy to target weight
+
+    Safety Layers (preserved):
+    - Dry run mode
+    - Max order value limits
+    - Position size limits
+    - Decimal precision for all monetary values
 
     Usage:
         router = OrderRouter(executor, config)
-
-        # From strategy's generate_signals()
-        signals = {"AAPL": 0.8, "MSFT": 0.5, "BTC-USD": 0.6}
-
-        # Execute signals
+        signals = {"AAPL": 0.8, "MSFT": 0.0}  # Want AAPL, exit MSFT
         orders = router.execute_signals(signals)
     """
 
@@ -92,55 +113,280 @@ class OrderRouter:
         dry_run: bool = False,
     ) -> List[OrderResult]:
         """
-        Convert signals to orders and execute.
+        Reconcile portfolio with target signals.
+
+        This method performs a full portfolio reconciliation:
+        1. Identifies positions to CLOSE (held but signal ≤ 0 or missing)
+        2. Identifies positions to OPEN (signal > 0 but not held)
+        3. Submits orders in sequence: closes first, then opens
 
         Args:
             signals: Dict mapping symbol -> signal strength (0 to 1)
-                     Higher strength = stronger conviction
+                     - strength > 0: Want to hold this position
+                     - strength ≤ 0 or missing: Want to exit this position
             dry_run: If True, calculate orders but don't submit
 
         Returns:
             List of OrderResult for submitted orders
         """
-        if not signals:
-            return []
-
         # Get current account state
         account = self._executor.get_account_info()
         positions = self._executor.get_positions()
 
-        # Calculate target orders
-        orders_to_submit = self._calculate_orders(signals, account, positions)
+        # Perform reconciliation
+        reconciliation = self._reconcile_portfolio(signals, account, positions)
+
+        logger.info(
+            f"Reconciliation: {len(reconciliation.closes)} closes, "
+            f"{len(reconciliation.opens)} opens"
+        )
 
         if dry_run:
-            logger.info(f"DRY RUN: Would submit {len(orders_to_submit)} orders")
-            for req in orders_to_submit:
-                logger.info(f"  {req.side.name} {req.qty} {req.symbol}")
+            logger.info(f"DRY RUN: Would submit {reconciliation.total_orders} orders")
+            for req in reconciliation.closes:
+                logger.info(f"  [CLOSE] SELL {req.qty} {req.symbol}")
+            for req in reconciliation.opens:
+                logger.info(f"  [OPEN] BUY {req.qty} {req.symbol}")
             return []
 
-        # Submit orders
+        # Submit orders: closes first, then opens
         results: List[OrderResult] = []
-        for request in orders_to_submit:
-            try:
-                result = self._executor.submit_order(request)
+
+        # Execute close orders first (free up capital)
+        for request in reconciliation.closes:
+            result = self._submit_order(request)
+            if result:
                 results.append(result)
 
-                # Track pending order
-                self._pending_orders[result.order_id] = PendingOrder(
-                    order_id=result.order_id,
-                    symbol=request.symbol,
-                    requested_qty=request.qty,
-                    side=request.side,
-                    submitted_at=result.created_at.timestamp(),
-                )
-
-                logger.info(
-                    f"Submitted {request.side.name} {request.qty} {request.symbol}"
-                )
-            except ExecutorError as e:
-                logger.error(f"Failed to submit order for {request.symbol}: {e}")
+        # Execute open orders
+        for request in reconciliation.opens:
+            result = self._submit_order(request)
+            if result:
+                results.append(result)
 
         return results
+
+    def _submit_order(self, request: OrderRequest) -> Optional[OrderResult]:
+        """Submit a single order with error handling."""
+        try:
+            result = self._executor.submit_order(request)
+
+            # Track pending order
+            self._pending_orders[result.order_id] = PendingOrder(
+                order_id=result.order_id,
+                symbol=request.symbol,
+                requested_qty=request.qty,
+                side=request.side,
+                submitted_at=result.created_at.timestamp(),
+            )
+
+            logger.info(
+                f"Submitted {request.side.name} {request.qty} {request.symbol}"
+            )
+            return result
+
+        except ExecutorError as e:
+            logger.error(f"Failed to submit order for {request.symbol}: {e}")
+            return None
+
+    def _reconcile_portfolio(
+        self,
+        signals: Dict[str, float],
+        account: AccountInfo,
+        positions: Dict[str, PositionInfo],
+    ) -> ReconciliationResult:
+        """
+        Compare target signals against current positions.
+
+        Returns:
+            ReconciliationResult with close and open orders
+        """
+        close_orders: List[OrderRequest] = []
+        open_orders: List[OrderRequest] = []
+
+        # Step 1: Generate CLOSE orders for positions we should exit
+        close_orders = self._generate_close_orders(signals, positions)
+
+        # Step 2: Generate OPEN orders for new positions
+        open_orders = self._generate_open_orders(signals, account, positions)
+
+        return ReconciliationResult(closes=close_orders, opens=open_orders)
+
+    def _generate_close_orders(
+        self,
+        signals: Dict[str, float],
+        positions: Dict[str, PositionInfo],
+    ) -> List[OrderRequest]:
+        """
+        Generate SELL orders for positions that should be closed.
+
+        A position should be closed if:
+        1. Symbol is not in the signals dict, OR
+        2. Signal strength is ≤ 0
+
+        Args:
+            signals: Target signals from strategy
+            positions: Current positions from broker
+
+        Returns:
+            List of SELL OrderRequests
+        """
+        close_orders: List[OrderRequest] = []
+
+        for symbol, position in positions.items():
+            signal_strength = signals.get(symbol, 0.0)
+
+            # Close if signal is zero/negative or symbol not in signals
+            if signal_strength <= 0:
+                # Only close if we have a positive quantity
+                if position.qty > 0:
+                    logger.info(
+                        f"Closing position {symbol}: signal={signal_strength:.2f}, "
+                        f"qty={position.qty}"
+                    )
+
+                    close_orders.append(
+                        OrderRequest(
+                            symbol=symbol,
+                            qty=position.qty,
+                            side=OrderSideEnum.SELL,
+                            client_order_id=f"close-{str(uuid.uuid4())[:8]}",
+                        )
+                    )
+
+        return close_orders
+
+    def _generate_open_orders(
+        self,
+        signals: Dict[str, float],
+        account: AccountInfo,
+        positions: Dict[str, PositionInfo],
+    ) -> List[OrderRequest]:
+        """
+        Generate BUY orders for new positions.
+
+        A position should be opened if:
+        1. Signal strength > 0, AND
+        2. Symbol is NOT in current positions
+
+        Args:
+            signals: Target signals from strategy
+            account: Current account info
+            positions: Current positions from broker
+
+        Returns:
+            List of BUY OrderRequests
+        """
+        # Calculate available capital by asset class
+        equity_budget = account.cash * self._config.equity_allocation_pct
+        crypto_budget = account.cash * self._config.crypto_allocation_pct
+
+        # Group signals by asset class (only positive signals for new positions)
+        equity_signals: Dict[str, float] = {}
+        crypto_signals: Dict[str, float] = {}
+
+        for symbol, strength in signals.items():
+            # Only consider positive signals
+            if strength <= 0:
+                continue
+
+            # Skip if already have position (no need to buy more)
+            if symbol in positions:
+                continue
+
+            asset_class = self._executor.get_asset_class(symbol)
+            if asset_class == AssetClassEnum.CRYPTO:
+                crypto_signals[symbol] = strength
+            else:
+                equity_signals[symbol] = strength
+
+        # Convert signals to orders
+        orders: List[OrderRequest] = []
+
+        orders.extend(
+            self._signals_to_buy_orders(
+                equity_signals, equity_budget, account.portfolio_value
+            )
+        )
+
+        orders.extend(
+            self._signals_to_buy_orders(
+                crypto_signals, crypto_budget, account.portfolio_value
+            )
+        )
+
+        return orders
+
+    def _signals_to_buy_orders(
+        self,
+        signals: Dict[str, float],
+        budget: Decimal,
+        portfolio_value: Decimal,
+    ) -> List[OrderRequest]:
+        """
+        Convert positive signals to BUY orders with position sizing.
+
+        Args:
+            signals: Dict of symbol -> strength (all should be > 0)
+            budget: Available budget for this asset class
+            portfolio_value: Total portfolio value for position limits
+
+        Returns:
+            List of BUY OrderRequests
+        """
+        if not signals:
+            return []
+
+        orders: List[OrderRequest] = []
+
+        # Normalize signal strengths to allocations
+        total_strength = sum(signals.values())
+
+        for symbol, strength in signals.items():
+            # Proportional allocation based on signal strength
+            allocation_pct = Decimal(str(strength / total_strength))
+            target_value = budget * allocation_pct
+
+            # Cap at max position size
+            max_value = portfolio_value * self._config.max_position_pct
+            target_value = min(target_value, max_value)
+
+            # Skip if below minimum
+            if target_value < self._config.min_order_value:
+                logger.debug(
+                    f"Skipping {symbol}: target value ${target_value:.2f} "
+                    f"below minimum ${self._config.min_order_value}"
+                )
+                continue
+
+            # Get current price to calculate quantity
+            price = self._get_price(symbol)
+            if price is None or price <= 0:
+                logger.warning(f"Cannot get price for {symbol}, skipping")
+                continue
+
+            qty = target_value / price
+
+            # Round appropriately (crypto can be fractional, equity integers)
+            asset_class = self._executor.get_asset_class(symbol)
+            if asset_class == AssetClassEnum.EQUITY:
+                qty = Decimal(int(qty))  # Round down to whole shares
+            else:
+                qty = qty.quantize(Decimal("0.0001"))  # 4 decimal places for crypto
+
+            if qty <= 0:
+                continue
+
+            orders.append(
+                OrderRequest(
+                    symbol=symbol,
+                    qty=qty,
+                    side=OrderSideEnum.BUY,
+                    client_order_id=f"open-{str(uuid.uuid4())[:8]}",
+                )
+            )
+
+        return orders
 
     def sync_portfolio(self) -> Dict[str, PositionInfo]:
         """
@@ -217,127 +463,48 @@ class OrderRouter:
         except ExecutorError:
             return None
 
+    def close_all_positions(self, dry_run: bool = False) -> List[OrderResult]:
+        """
+        Emergency close of all positions.
+
+        Args:
+            dry_run: If True, log but don't execute
+
+        Returns:
+            List of OrderResults for close orders
+        """
+        positions = self._executor.get_positions()
+
+        if not positions:
+            logger.info("No positions to close")
+            return []
+
+        close_orders = self._generate_close_orders(signals={}, positions=positions)
+
+        if dry_run:
+            logger.info(f"DRY RUN: Would close {len(close_orders)} positions")
+            for req in close_orders:
+                logger.info(f"  [CLOSE] SELL {req.qty} {req.symbol}")
+            return []
+
+        results: List[OrderResult] = []
+        for request in close_orders:
+            result = self._submit_order(request)
+            if result:
+                results.append(result)
+
+        return results
+
     # =========================================================================
     # Private Methods
     # =========================================================================
 
-    def _calculate_orders(
-        self,
-        signals: Dict[str, float],
-        account: AccountInfo,
-        positions: Dict[str, PositionInfo],
-    ) -> List[OrderRequest]:
-        """
-        Convert signals to order requests with position sizing.
-
-        Algorithm:
-        1. Filter signals to only those without existing positions
-        2. Separate equity vs crypto signals
-        3. Apply allocation limits
-        4. Calculate per-symbol allocation
-        5. Convert to share quantities
-        """
-        orders: List[OrderRequest] = []
-
-        # Calculate available capital by asset class
-        equity_budget = account.cash * self._config.equity_allocation_pct
-        crypto_budget = account.cash * self._config.crypto_allocation_pct
-
-        # Group signals by asset class
-        equity_signals: Dict[str, float] = {}
-        crypto_signals: Dict[str, float] = {}
-
-        for symbol, strength in signals.items():
-            if strength <= 0:
-                continue
-
-            # Skip if already have position
-            if symbol in positions:
-                continue
-
-            asset_class = self._executor.get_asset_class(symbol)
-            if asset_class == AssetClassEnum.CRYPTO:
-                crypto_signals[symbol] = strength
-            else:
-                equity_signals[symbol] = strength
-
-        # Process equity signals
-        orders.extend(
-            self._signals_to_orders(
-                equity_signals, equity_budget, account.portfolio_value
-            )
-        )
-
-        # Process crypto signals
-        orders.extend(
-            self._signals_to_orders(
-                crypto_signals, crypto_budget, account.portfolio_value
-            )
-        )
-
-        return orders
-
-    def _signals_to_orders(
-        self,
-        signals: Dict[str, float],
-        budget: Decimal,
-        portfolio_value: Decimal,
-    ) -> List[OrderRequest]:
-        """Convert signals within an asset class to orders."""
-        if not signals:
-            return []
-
-        orders: List[OrderRequest] = []
-
-        # Normalize signal strengths to allocations
-        total_strength = sum(signals.values())
-
-        for symbol, strength in signals.items():
-            # Proportional allocation based on signal strength
-            allocation_pct = Decimal(str(strength / total_strength))
-            target_value = budget * allocation_pct
-
-            # Cap at max position size
-            max_value = portfolio_value * self._config.max_position_pct
-            target_value = min(target_value, max_value)
-
-            # Skip if below minimum
-            if target_value < self._config.min_order_value:
-                continue
-
-            # Get current price to calculate quantity
-            price = self._get_price(symbol)
-            if price is None or price <= 0:
-                logger.warning(f"Cannot get price for {symbol}, skipping")
-                continue
-
-            qty = target_value / price
-
-            # Round appropriately (crypto can be fractional, equity integers)
-            asset_class = self._executor.get_asset_class(symbol)
-            if asset_class == AssetClassEnum.EQUITY:
-                qty = Decimal(int(qty))  # Round down to whole shares
-            else:
-                qty = qty.quantize(Decimal("0.0001"))  # 4 decimal places for crypto
-
-            if qty <= 0:
-                continue
-
-            orders.append(
-                OrderRequest(
-                    symbol=symbol,
-                    qty=qty,
-                    side=OrderSideEnum.BUY,
-                    client_order_id=str(uuid.uuid4())[:8],
-                )
-            )
-
-        return orders
-
     def _get_price(self, symbol: str) -> Optional[Decimal]:
         """Get current price for symbol."""
         if self._price_fetcher:
-            return self._price_fetcher(symbol)
+            price = self._price_fetcher(symbol)
+            if price and price > 0:
+                return price
 
         # Fallback: try to get from existing position
         try:

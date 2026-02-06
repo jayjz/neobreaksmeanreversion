@@ -44,7 +44,41 @@
 - [x] **Dependencies:** Added `streamlit` and `plotly` to requirements.txt.
 - [x] **Documentation:** Updated README with Dashboard section and deploy script usage.
 
-## Phase 7: Paper Trading Validation (Future)
+## Phase 6.1: Execution Reconciliation & Enterprise Hardening (Complete)
+Critical fix identified during pre-paper-trading review: OrderRouter was only buying, never selling.
+
+### Problem Statement
+The `OrderRouter._calculate_orders()` method had two blockers preventing sells:
+1. `if strength <= 0: continue` — Ignored zero/negative signals (sell signals)
+2. `if symbol in positions: continue` — Ignored symbols we already hold
+
+This created a "ratchet" effect where positions were never closed except by hard stops.
+
+### Solution: Portfolio Reconciliation Model
+Refactor router to use a **Target vs Actual** reconciliation loop:
+
+```
+For each HELD position:
+  If symbol NOT in signals OR signals[symbol] <= 0:
+    → Issue SELL order to close position
+
+For each SIGNAL with strength > 0:
+  If symbol NOT in positions:
+    → Issue BUY order to open position
+```
+
+### Implementation Tasks
+- [x] **Refactor OrderRouter:** Full reconciliation in `execute_signals()` method
+- [x] **Close Order Generation:** `_generate_close_orders()` for positions not in signals
+- [x] **Open Order Generation:** `_generate_open_orders()` for new positive signals
+- [x] **Type Safety:** All Decimal calculations, mypy clean
+- [x] **Logging:** Both BUY and SELL orders logged to audit trail (side inferred from client_order_id)
+- [x] **Tests:** 16 new test cases for sell scenarios, signal disappearance, reconciliation (92 total)
+- [x] **Safety:** All existing guards (dry-run, max order value) preserved
+- [ ] **Lower Priority:** Switch data source from yfinance to Alpaca Market Data API
+
+## Phase 7: Paper Trading Validation (Active)
+- [x] **Bug Fix (2026-02-06):** Crypto SELL orders failed with error 42210000 "invalid crypto time_in_force". Fixed `AlpacaExecutor.submit_order()` to use `get_asset_class()` for robust crypto detection and force `TimeInForce.GTC` for crypto orders.
 - [ ] Run system in paper mode for 1+ week to validate end-to-end behavior.
 - [ ] Analyze trade logs and performance reports.
 - [ ] Tune strategy parameters based on real market conditions.

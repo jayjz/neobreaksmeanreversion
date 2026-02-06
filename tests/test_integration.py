@@ -66,14 +66,21 @@ def mock_env_paper():
 class TestConfigLoading:
     """Test configuration management."""
 
+    def _mock_env_file_exists(self, config_module: object) -> object:
+        """Helper to mock _ENV_FILE.exists() returning True."""
+        mock_path = MagicMock()
+        mock_path.exists.return_value = True
+        return patch.object(config_module, "_ENV_FILE", mock_path)
+
     def test_load_config_paper_mode(self, mock_env_paper: dict) -> None:
         """Valid env vars should produce TradingConfig in paper mode."""
         import config
 
         with patch.dict(os.environ, mock_env_paper, clear=True):
             importlib.reload(config)
-            with patch.object(config, "load_dotenv"):  # Don't load .env file
-                result = config.load_config()
+            with self._mock_env_file_exists(config):
+                with patch.object(config, "load_dotenv"):  # Don't load .env file
+                    result = config.load_config()
 
             assert result.alpaca_api_key == "test_api_key"
             assert result.alpaca_secret_key == "test_secret_key"
@@ -91,12 +98,12 @@ class TestConfigLoading:
         # Reload with cleared environment
         with patch.dict(os.environ, {}, clear=True):
             importlib.reload(config)
-            # Patch the local reference after reload
-            with patch.object(config, "load_dotenv"):
-                with pytest.raises(ValueError) as exc_info:
-                    config.load_config()
+            with self._mock_env_file_exists(config):
+                with patch.object(config, "load_dotenv"):
+                    with pytest.raises(ValueError) as exc_info:
+                        config.load_config()
 
-                assert "ALPACA_API_KEY" in str(exc_info.value)
+                    assert "ALPACA_API_KEY" in str(exc_info.value)
 
     def test_missing_secret_key_raises_error(self) -> None:
         """Missing secret key should raise ValueError."""
@@ -104,11 +111,12 @@ class TestConfigLoading:
 
         with patch.dict(os.environ, {"ALPACA_API_KEY": "key"}, clear=True):
             importlib.reload(config)
-            with patch.object(config, "load_dotenv"):
-                with pytest.raises(ValueError) as exc_info:
-                    config.load_config()
+            with self._mock_env_file_exists(config):
+                with patch.object(config, "load_dotenv"):
+                    with pytest.raises(ValueError) as exc_info:
+                        config.load_config()
 
-                assert "ALPACA_SECRET_KEY" in str(exc_info.value)
+                    assert "ALPACA_SECRET_KEY" in str(exc_info.value)
 
     def test_live_mode_sets_paper_false(self) -> None:
         """TRADING_MODE=LIVE should set paper=False."""
@@ -122,9 +130,10 @@ class TestConfigLoading:
         }
         with patch.dict(os.environ, env, clear=True):
             importlib.reload(config)
-            with patch.object(config, "load_dotenv"):
-                with patch.object(config.time, "sleep"):  # Skip 5s warning delay
-                    result = config.load_config()
+            with self._mock_env_file_exists(config):
+                with patch.object(config, "load_dotenv"):
+                    with patch.object(config.time, "sleep"):  # Skip 5s warning delay
+                        result = config.load_config()
 
         assert result.paper is False
         assert result.live_trading_enabled is True
@@ -139,8 +148,9 @@ class TestConfigLoading:
         }
         with patch.dict(os.environ, env, clear=True):
             importlib.reload(config)
-            with patch.object(config, "load_dotenv"):
-                result = config.load_config()
+            with self._mock_env_file_exists(config):
+                with patch.object(config, "load_dotenv"):
+                    result = config.load_config()
 
         # Check defaults
         assert result.paper is True
@@ -149,6 +159,23 @@ class TestConfigLoading:
         assert result.lookback_days == 60
         assert result.max_order_value == Decimal("10000")
         assert result.cycle_interval_minutes == 60
+
+    def test_missing_env_file_raises_helpful_error(self) -> None:
+        """Missing .env file should raise FileNotFoundError with helpful message."""
+        import config
+
+        with patch.dict(os.environ, {}, clear=True):
+            importlib.reload(config)
+            # Mock _ENV_FILE.exists() to return False
+            mock_path = MagicMock()
+            mock_path.exists.return_value = False
+            with patch.object(config, "_ENV_FILE", mock_path):
+                with pytest.raises(FileNotFoundError) as exc_info:
+                    config.load_config()
+
+                error_msg = str(exc_info.value)
+                assert ".env file not found" in error_msg
+                assert "cp" in error_msg  # Should suggest copy command
 
 
 # =============================================================================
@@ -390,10 +417,20 @@ class TestExecutionIntegration:
 
     def test_empty_signals_handled(self) -> None:
         """Router should handle empty signals gracefully."""
+        from decimal import Decimal
         from execution import OrderRouter
         from execution.base import ExecutorBase
+        from execution.models import AccountInfo
 
         mock_executor = Mock(spec=ExecutorBase)
+        # Setup mocks for reconciliation flow
+        mock_executor.get_account_info.return_value = AccountInfo(
+            cash=Decimal("10000"),
+            buying_power=Decimal("10000"),
+            portfolio_value=Decimal("10000"),
+            equity=Decimal("10000"),
+        )
+        mock_executor.get_positions.return_value = {}  # No existing positions
 
         router = OrderRouter(mock_executor)
         results = router.execute_signals({})
@@ -502,6 +539,108 @@ class TestModuleImports:
 
         assert MarketDataLoader is not None
         assert HybridDataNormalizer is not None
+
+
+class TestLoaderMultiIndexFix:
+    """Tests for the yfinance MultiIndex fix in MarketDataLoader."""
+
+    def test_single_ticker_returns_multiindex(self) -> None:
+        """Single ticker should return MultiIndex columns."""
+        from data.loader import MarketDataLoader
+
+        loader = MarketDataLoader(lookback_days=5)
+
+        # Mock yfinance to return MultiIndex (modern behavior)
+        mock_df = pd.DataFrame(
+            {
+                ("AAPL", "Open"): [150.0, 151.0],
+                ("AAPL", "High"): [155.0, 156.0],
+                ("AAPL", "Low"): [149.0, 150.0],
+                ("AAPL", "Close"): [153.0, 154.0],
+                ("AAPL", "Volume"): [1e6, 1.1e6],
+            },
+            index=pd.date_range("2024-01-01", periods=2),
+        )
+        mock_df.columns = pd.MultiIndex.from_tuples(mock_df.columns)
+
+        with patch("yfinance.download", return_value=mock_df):
+            result = loader.fetch_data(["AAPL"], "equity")
+
+        assert isinstance(result.columns, pd.MultiIndex)
+        assert "AAPL" in result.columns.get_level_values(0)
+        assert "Close" in result.columns.get_level_values(1)
+
+    def test_single_ticker_flat_index_promoted(self) -> None:
+        """Single ticker with flat index should be promoted to MultiIndex."""
+        from data.loader import MarketDataLoader
+
+        loader = MarketDataLoader(lookback_days=5)
+
+        # Mock yfinance to return flat index (legacy behavior)
+        mock_df = pd.DataFrame(
+            {
+                "Open": [150.0, 151.0],
+                "High": [155.0, 156.0],
+                "Low": [149.0, 150.0],
+                "Close": [153.0, 154.0],
+                "Volume": [1e6, 1.1e6],
+            },
+            index=pd.date_range("2024-01-01", periods=2),
+        )
+
+        with patch("yfinance.download", return_value=mock_df):
+            result = loader.fetch_data(["AAPL"], "equity")
+
+        assert isinstance(result.columns, pd.MultiIndex)
+        assert "AAPL" in result.columns.get_level_values(0)
+        assert "Close" in result.columns.get_level_values(1)
+
+    def test_price_fetcher_gets_valid_price(self) -> None:
+        """Price fetcher should return valid Decimal price."""
+        from data.loader import MarketDataLoader
+        from typing import Dict, Optional
+
+        loader = MarketDataLoader(lookback_days=5)
+
+        # Inline price fetcher (same logic as main.py)
+        def create_price_fetcher(ldr: MarketDataLoader, tickers: list) -> callable:  # type: ignore
+            cache: Dict[str, Decimal] = {}
+
+            def fetcher(symbol: str) -> Optional[Decimal]:
+                if symbol not in cache:
+                    try:
+                        asset_class = "crypto" if "-USD" in symbol else "equity"
+                        df = ldr.fetch_data([symbol], asset_class)
+                        if symbol in df.columns.get_level_values(0):
+                            close_col = df[symbol]["Close"]
+                            if not close_col.empty:
+                                cache[symbol] = Decimal(str(close_col.iloc[-1]))
+                    except Exception:
+                        pass
+                return cache.get(symbol, Decimal("0"))
+
+            return fetcher
+
+        # Mock yfinance to return MultiIndex
+        mock_df = pd.DataFrame(
+            {
+                ("AAPL", "Open"): [150.0, 151.0],
+                ("AAPL", "High"): [155.0, 156.0],
+                ("AAPL", "Low"): [149.0, 150.0],
+                ("AAPL", "Close"): [153.0, 154.0],
+                ("AAPL", "Volume"): [1e6, 1.1e6],
+            },
+            index=pd.date_range("2024-01-01", periods=2),
+        )
+        mock_df.columns = pd.MultiIndex.from_tuples(mock_df.columns)
+
+        with patch("yfinance.download", return_value=mock_df):
+            fetcher = create_price_fetcher(loader, ["AAPL"])
+            price = fetcher("AAPL")
+
+        assert price is not None
+        assert price > Decimal("0")
+        assert price == Decimal("154.0")
 
 
 if __name__ == "__main__":
