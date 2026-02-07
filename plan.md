@@ -84,3 +84,54 @@ For each SIGNAL with strength > 0:
 - [ ] Tune strategy parameters based on real market conditions.
 - [ ] Implement Prometheus/Grafana metrics export.
 - [ ] Add WebSocket real-time price streaming for lower latency.
+
+## Phase 8: NeoBreaksOut Multi-Strategy Platform (Planned)
+
+Fork hybrid_trader into a multi-strategy platform with shared infrastructure.
+
+### 8.1: Repository Restructure
+- [ ] **Run Setup Script:** Execute `setup_neobreaksout.sh` to create new structure
+- [ ] **Fix Import Paths:** Update all imports in copied files to use `shared.` prefix
+- [ ] **Verify Tests:** Ensure all 94 tests pass in new structure
+- [ ] **Type Safety:** mypy clean on shared/ and strategies/
+
+### 8.2: Shared Infrastructure Extraction
+Files extracted to `shared/`:
+| Module | Files | Purpose |
+|--------|-------|---------|
+| `data/` | `loader.py`, `normalizer.py` | Market data loading & normalization |
+| `execution/` | `base.py`, `models.py`, `alpaca.py`, `router.py` | Order execution & portfolio reconciliation |
+| `strategies/` | `base.py`, `feed_adapter.py` | Risk management (5% stop, 5-day time-stop) |
+| `utils/` | `logger.py` | Structured logging & trade audit |
+| Root | `health.py`, `config_base.py` | Health monitoring & base config |
+
+### 8.3: Momentum Equity Strategy
+New strategy in `strategies/momentum_equity/`:
+
+**Signal Generation:**
+- Universe: S&P 500 subset (30 tickers, expandable)
+- Lookback: Prior 11-month returns (t-12 to t-1), skip most recent month
+- Selection: Rank by momentum, long top decile
+- Weighting: Equal-weight across selected positions
+
+**Rebalancing:**
+- Frequency: Monthly (first trading day of month)
+- Detection: Track `last_rebalance_month`, trigger on month change
+
+**Risk Management (inherited from shared base):**
+- 5% hard stop-loss
+- 5-day time-stop
+- Position limits via OrderRouter
+
+**Implementation Tasks:**
+- [ ] Complete `MomentumEquity.generate_signals()` with proper momentum calculation
+- [ ] Add momentum-specific tests (ranking, rebalance timing, signal strength)
+- [ ] Test integration with OrderRouter reconciliation
+- [ ] Paper trade momentum strategy independently
+- [ ] Backtest against historical S&P 500 data (2010-2024)
+
+### 8.4: Strategy Composition (Future)
+- [ ] Multi-strategy portfolio combining reversal + momentum
+- [ ] Capital allocation across strategies
+- [ ] Correlation-aware position sizing
+- [ ] Unified dashboard for all strategies

@@ -71,3 +71,11 @@
 - **Order Side Tracking:** When OrderResult doesn't include side, use client_order_id prefix pattern: "close-{uuid}" for SELL, "open-{uuid}" for BUY. This enables proper audit logging without modifying DTOs.
 - **Reconciliation Test Coverage:** Test all scenarios: signal disappearance, signal drops to zero, signal stays positive (no action), multiple symbols, crypto positions, dry run mode, edge cases (empty portfolio, full exit).
 - **ReconciliationResult DTO:** Use frozen dataclass with `closes: List[OrderRequest]` and `opens: List[OrderRequest]` for type safety and clear separation of order types.
+
+## Multi-Strategy Architecture (Phase 8 - 2026-02-06)
+- **Shared Infrastructure Pattern:** Extract generic components (data loading, execution, risk management) to `shared/` directory. Strategy-specific logic stays in `strategies/<name>/`.
+- **Base Strategy Reuse:** `ReversalStrategy` base class provides stop-loss (5%) and time-stop (5 days) for all strategies. New strategies inherit and implement `generate_signals()` + `get_position_size()`.
+- **Config Composition:** Use `BaseConfig` for credentials/execution settings, strategy-specific configs extend with custom parameters. Load via `get_base_config()` + strategy-specific loader.
+- **Momentum Calculation:** For 11-month momentum, use `(price_t-skip / price_t-lookback-skip) - 1`. Skip most recent month to avoid reversal effect. Approximate 21 trading days per month.
+- **Monthly Rebalancing:** Track `last_rebalance_month`, trigger signals only when month changes. Avoids over-trading within month.
+- **Import Path Management:** When extracting to shared/, all strategy files need `sys.path.insert(0, project_root)` and imports like `from shared.execution import ...`.
